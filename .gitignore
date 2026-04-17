@@ -42,3 +42,13 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Logs
+*.log
+
+# Frontend (Vite / Node)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+mudra_webcam_test/frontend/node_modules/
+mudra_webcam_test/frontend/dist/

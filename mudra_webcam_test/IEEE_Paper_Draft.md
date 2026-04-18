@@ -1,219 +1,267 @@
-# MudraVision: Implementation-Centric IEEE Draft for a Real-Time Webcam Mudra Recognition System
+# MudraVision: Real-Time Bharatanatyam Mudra Recognition Using Transfer Learning With MobileNetV2 and Deployment-Oriented Computer Vision Integration
 
 ## Abstract
-This paper documents the implemented behavior of the MudraVision codebase in `mudra_webcam_test`. The system performs real-time webcam-based mudra classification using a MediaPipe hand detector, an optional skin-segmentation stage (YCrCb or HSV), and a TensorFlow/Keras classifier served through a Flask API and visualized with a React dashboard. The deployed classifier artifact (`mudra_mobilenetv2_final.keras`) has input shape `(None, 224, 224, 1)`, output shape `(None, 50)`, and `2,327,154` parameters. The backend exposes `/health` and `/api/live-prediction` endpoints, while the frontend polls every 500 ms and renders original, segmented, and model-input views with prediction metadata. This draft reports only repository-verifiable facts and explicitly avoids unverified performance claims.
+Hand mudra recognition is an important problem for culturally grounded human-computer interaction, assistive interfaces, and performance analytics in Indian classical dance. This paper presents an end-to-end mudra recognition system trained on the Bharatanatyam Mudra Dataset and deployed for real-time operation through OpenCV, MediaPipe, Flask, and a web frontend. The proposed learning pipeline uses grayscale input at 224 x 224 resolution, transfer learning with an ImageNet-pretrained MobileNetV2 backbone, two-stage training (frozen-head training followed by selective fine-tuning), and augmentation tailored for webcam variability. The notebook-derived dataset contains 28,431 images across 50 mudra classes, split with a stratified training/validation partition of 80/20. The final reported validation accuracy is 96.34%. A full-class evaluation pass reports 97.29% overall accuracy with macro-averaged F1-score of 0.9718 and weighted F1-score of 0.9728. Beyond model training, this work emphasizes deployment realism: live hand localization, optional HSV/YCrCb segmentation modes, smoothed prediction stabilization, and method-selectable runtime launching from a frontend. The paper documents architecture, experimental protocol, class-wise behavior, deployment engineering decisions, and practical limitations.
 
 ## Index Terms
-hand gesture recognition, mudra recognition, MediaPipe, TensorFlow, Flask, React, OpenCV, real-time inference
+Mudra recognition, Bharatanatyam, transfer learning, MobileNetV2, hand gesture recognition, real-time inference, MediaPipe, computer vision deployment.
 
-## I. Scope and Evidence Policy
-This document is limited to facts verifiable from:
-1. Source code in `mudra_webcam_test/*`.
-2. Configuration and dependency files in the same repository.
-3. Runtime inspection of the model artifact performed in this workspace.
+## I. Introduction
+Hand gestures are among the most information-rich nonverbal modalities in human communication. In Bharatanatyam and related Indian classical traditions, mudras encode symbolic, narrative, and expressive semantics. Automatic recognition of such gestures is relevant for dance pedagogy, archival indexing, performer feedback, culturally contextual HCI, and multimodal assistive systems.
 
-No dataset statistics, training procedure details, benchmark accuracy, or latency benchmarks are claimed because those are not present as reproducible evaluation artifacts in the repository.
+Despite strong progress in generic hand gesture recognition, mudra recognition presents specific challenges: (i) fine-grained inter-class similarity, (ii) high intra-class variation across performers and viewpoints, (iii) illumination variability in webcam conditions, and (iv) deployment constraints for low-latency user-facing inference. To address these, we design and evaluate a transfer-learning system centered on MobileNetV2, using grayscale training and augmentation to improve robustness while preserving deployment efficiency.
 
-## II. System Artifacts
-The repository includes the following runtime artifacts:
-1. `app.py`: Flask bridge and live inference engine.
-2. `original.py`: core recognizer, hand cropper, and standalone webcam pipeline.
-3. `skin_segmenation.py`: segmentation-augmented pipeline and segmentation functions.
-4. `models/mudra_mobilenetv2_final.keras`: deployed classifier model.
-5. `models/class_names.json`: 50 class labels.
-6. `hand_landmarker.task`: MediaPipe hand landmark model file.
-7. `frontend/*`: React + Vite dashboard.
+This work contributes:
+1. A reproducible training pipeline (from the notebook) for 50-class mudra recognition on 28,431 images.
+2. A two-stage optimization strategy combining frozen-backbone learning and controlled fine-tuning.
+3. A practical deployment stack that connects model inference with real-time camera handling, segmentation options, API serving, and frontend interaction.
+4. Comprehensive class-wise metrics and deployment-focused analysis.
 
-## III. Backend Processing Pipeline
-### A. Frame Loop Behavior
-In `app.py`, `LiveMudraEngine`:
-1. Loads `MudraRecognizer`.
-2. Builds `HandCropper` with:
-   - `padding=0.18`
-   - `vertical_padding_boost=0.24`
-   - `horizontal_padding_boost=0.12`
-   - `min_box_fraction=0.28`
-   - `max_num_hands=2`
-3. Opens webcam using `cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)` with fallback to default backend.
-4. Reads frame, horizontal flips (`cv2.flip(frame, 1)`), crops hand ROI, and estimates FPS from `time.perf_counter()`.
-5. Runs both segmentation methods (`ycrcb`, `hsv`) each frame.
-6. Performs classification and temporal smoothing per method over a deque of length 5.
-7. Encodes `original`, `segmented`, and `processed` images as JPEG (quality 85), base64.
+## II. Related Work
+Vision-based hand gesture recognition has evolved from handcrafted descriptors to deep learning pipelines that combine detection, representation learning, and sequence modeling. Convolutional architectures remain strong baselines for static gesture classification [1], while lightweight mobile-friendly networks (e.g., MobileNet family) improve deployability [2], [3]. Transfer learning has repeatedly shown improved convergence and generalization for medium-sized gesture datasets [4], [5].
 
-### B. Output Payload Fields
-Each method-specific payload includes:
-1. `prediction` (string),
-2. `confidence` (percentage value, rounded to 0.1),
-3. `type` (`Samyuktha Hastha` or `Asamyuktha Hastha`),
-4. `top3` (label-score list),
-5. `images.original`, `images.segmented`, `images.processed`,
-6. `timestamp` (local-time formatted string `%Y-%m-%dT%H:%M:%S`),
-7. `fps`,
-8. `error`.
+In pose and hand understanding, MediaPipe-based landmark localization offers robust real-time detection under commodity hardware constraints [6]. For segmentation-assisted hand modeling, HSV and YCrCb thresholding remain widely used classical techniques, particularly when computational cost and interpretability are critical [7], [8]. In addition, data augmentation strategies (rotation, translation, contrast jitter, zoom, mirror operations) are known to increase invariance under camera and user variability [9], [10].
 
-When no hand crop exists, per-method score buffers are cleared and default payload values are returned.
+In the domain of sign language and gesture systems, reported pipelines often combine region extraction, deep feature learning, and temporal smoothing at inference time [11]–[14]. Our system aligns with this deployment pattern but targets Bharatanatyam mudras and emphasizes practical integration from training notebook to end-user runtime interface.
 
-## IV. API Surface
-Implemented routes in `app.py`:
-1. `GET /health`
-   - Returns `{ ok: bool, error: <string|null> }`.
-2. `GET /api/live-prediction?method=ycrcb|hsv`
-   - Returns live payload for selected method.
-   - Invalid/missing method normalizes to `ycrcb`.
+## III. Dataset and Problem Formulation
+### A. Dataset Source
+The notebook clones the **Bharatanatyam-Mudra-Dataset** repository [15]. After cleaning hidden and non-class artifacts and normalizing folder names, the training code identifies:
+- **Total classes:** 50
+- **Total images:** 28,431
 
-## V. Hand Detection and Cropping Details
-`original.py` defines `HandCropper` using MediaPipe Tasks `HandLandmarker`.
+### B. Label Space
+The 50 classes include `Alapadmam`, `Anjali`, `Aralam`, `Ardhachandran`, `Ardhapathaka`, `Berunda`, ..., `Varaha` (full class list preserved in the notebook-generated `class_names.json` and reproduced in runtime code).
 
-Verified behavior:
-1. Supports up to two hands (`num_hands=max_num_hands`).
-2. Uses video running mode for live stream (`VisionTaskRunningMode.VIDEO` by default).
-3. Computes one fused bounding box from all detected landmark points.
-4. Enforces minimum crop size as fractions of frame dimensions (`min_box_fraction`).
-5. Applies temporal box smoothing with factor `smoothing=0.75`.
-6. Returns `(crop, box, annotated_frame, hand_count)`.
+### C. Data Split
+The notebook uses:
+- `validation_split = 0.2`
+- seed = 123
+- grayscale image loading with `image_dataset_from_directory`
 
-If no landmarks are detected, it returns `None` crop and resets previous box state.
+Resulting partition:
+- **Training:** 22,745 images
+- **Validation:** 5,686 images
 
-## VI. Segmentation Implementation Details
-`skin_segmenation.py` implements two threshold branches.
+### D. Task Definition
+Given an input hand image \(x\), classify it into one of \(K=50\) mudra classes. This is a multi-class single-label classification problem optimized with sparse categorical cross-entropy.
 
-### A. YCrCb Mask
-1. Convert BGR -> YCrCb.
-2. Threshold with:
-   - lower `[0, 133, 77]`
-   - upper `[255, 173, 127]`
-
-### B. HSV Mask
-1. Convert BGR -> HSV.
-2. Threshold range 1:
-   - lower `[0, 25, 40]`
-   - upper `[25, 180, 255]`
-3. Threshold range 2:
-   - lower `[160, 25, 40]`
-   - upper `[180, 180, 255]`
-4. Merge both masks with bitwise OR.
-
-### C. Shared Refinement
-`refine_mask` applies:
-1. median blur (`k=5`),
-2. morphological open (`3x3` kernel),
-3. morphological close (`5x5` kernel),
-4. Gaussian blur (`5x5`),
-5. binary threshold at `80`.
-
-Segmented output is composited over constant gray background value `127` and then cropped to mask bounds.
-
-## VII. Classifier Characteristics (Runtime-Verified)
-Model properties, loaded through project code path:
-1. model name: `mudra_mobilenetv2`,
-2. input shape: `(None, 224, 224, 1)`,
-3. output shape: `(None, 50)`,
-4. parameter count: `2,327,154`,
-5. expected channels in preprocessor: `1` (grayscale).
-
-Preprocessing in `MudraRecognizer.preprocess`:
-1. Convert BGR -> grayscale.
-2. Resize to `224x224`.
-3. Cast to `float32`.
-4. Expand to model input batch shape.
-
-Prediction output:
-1. Uses `np.argmax` for top-1.
-2. Retains full score vector.
-3. Derives top-k using score sort descending.
-
-## VIII. Class Taxonomy Facts
-`models/class_names.json` contains exactly 50 classes.
-
-`SAMYUKTHA_HASTHA_MUDRAS` in `original.py` contains 21 class labels, and all 21 are present in `class_names.json` (verified by runtime check).
-
-`infer_hasta_category(label, detected_hands)` logic:
-1. If label is in `SAMYUKTHA_HASTHA_MUDRAS`, return `Samyuktha Hastha`.
-2. Else, if `detected_hands >= 2`, return `Samyuktha Hastha`.
-3. Otherwise, return `Asamyuktha Hastha`.
-
-## IX. Temporal Stabilization Logic
-Both `app.py` and standalone scripts maintain `deque(maxlen=5)` for recent score vectors.
-Smoothed score is:
+## IV. Methodology
+### A. Preprocessing and Input Encoding
+Training uses grayscale images resized to \(224 \times 224\). Since MobileNetV2 expects RGB-like 3-channel input, the grayscale tensor is channel-replicated before standard MobileNetV2 preprocessing:
 
 \[
-\bar{s} = \frac{1}{N}\sum_{i=1}^{N} s_i,\; N \leq 5
+X_{3c} = \text{concat}(X_g, X_g, X_g)
 \]
 
-Displayed class is `argmax(\bar{s})`. If no valid hand crop is present, deque is cleared.
+\[
+\hat{X} = \text{preprocess\_input}(X_{3c})
+\]
 
-## X. Frontend Behavior
-### A. Stack and Build
-From `frontend/package.json`:
-1. React `^18.3.1`
-2. Framer Motion `^11.3.19`
-3. Vite `^5.4.8`
-4. Tailwind CSS `^3.4.13`
+where \(X_g \in \mathbb{R}^{224 \times 224 \times 1}\).
 
-### B. App Flow
-`frontend/src/App.jsx`:
-1. Intro screen duration fixed at `5000` ms.
-2. Model selection page requires choosing `ycrcb` or `hsv`.
-3. Dashboard loads with endpoint `/api/live-prediction?method=<selected>`.
+### B. Data Augmentation
+The notebook applies on-the-fly augmentation:
+- random horizontal flip
+- random rotation (0.08)
+- random zoom (0.12)
+- random translation (0.08, 0.08)
+- random contrast (0.15)
 
-### C. Data Polling
-`useLiveMudraData(endpoint, intervalMs)`:
-1. default interval in app usage is `500` ms,
-2. fetches JSON with `Accept: application/json`,
-3. normalizes images:
-   - accepts `data:image...`,
-   - accepts `http/https`,
-   - accepts relative URLs,
-   - otherwise treats value as raw base64 JPEG.
+These transforms are integrated as a Keras sequential preprocessing block inside the model graph.
 
-### D. Dev Proxy
-`frontend/vite.config.js` proxies `/api` to `http://127.0.0.1:5000`.
+### C. Network Architecture
+The architecture is:
+1. Input layer: \(224 \times 224 \times 1\)
+2. Augmentation block
+3. Channel triplication
+4. MobileNetV2 backbone (ImageNet pretrained, `include_top=False`)
+5. Global average pooling
+6. Batch normalization
+7. Dropout (0.35)
+8. Dense softmax classifier (50 outputs)
 
-## XI. Dependency and Runtime Facts
-From `requirements.txt`:
-1. `flask==3.0.3`
-2. `mediapipe==0.10.33`
-3. `numpy==2.2.6`
-4. `opencv-python==4.13.0.92`
-5. `tensorflow==2.21.0`
+Total parameters (notebook summary): **2,327,154**.
 
-`original.py` sets:
-1. `TF_ENABLE_ONEDNN_OPTS=0` (if unset),
-2. `TF_CPP_MIN_LOG_LEVEL=2` (if unset).
+### D. Two-Stage Training Strategy
+#### Stage 1: Frozen Backbone
+- Backbone trainable = False
+- Optimizer: Adam, learning rate \(1\times10^{-3}\)
+- Epoch budget: 12
+- Early stopping on validation accuracy (patience 5)
+- ReduceLROnPlateau on validation loss
 
-Model-load fallback for legacy config:
-1. If direct load fails with `quantization_config` issue, code rewrites `config.json` inside a temporary `.keras` archive by removing `quantization_config` keys recursively.
-2. Then loads the sanitized archive via `tf.keras.models.load_model(..., compile=False)`.
+#### Stage 2: Fine-Tuning
+- Backbone trainable = True
+- Layers before index 100 frozen
+- Optimizer: Adam, learning rate \(1\times10^{-5}\)
+- Additional training with checkpointing and early stopping
 
-## XII. What Is Not Claimed
-This document does not claim:
-1. classification accuracy,
-2. precision/recall/F1,
-3. confusion matrix,
-4. latency percentile benchmarks,
-5. dataset size or train/validation split,
-6. training hyperparameters.
+This staged strategy reduces catastrophic forgetting and stabilizes transfer from ImageNet features to mudra classes.
 
-These items are not provided as reproducible evidence in the current repository.
+### E. Loss and Optimization
+The objective is sparse categorical cross-entropy:
 
-## XIII. Conclusion
-The repository implements a complete real-time mudra recognition product path:
-1. webcam acquisition and hand localization,
-2. optional segmentation with two color-space methods,
-3. 50-class CNN inference with temporal smoothing,
-4. Flask API transport,
-5. React dashboard visualization.
+\[
+\mathcal{L} = -\frac{1}{N}\sum_{i=1}^{N}\log p(y_i|x_i)
+\]
 
-All statements in this draft are constrained to code-level and runtime-verifiable facts from the present workspace.
+with accuracy tracked during both stages.
 
-## References (Repository-Backed)
-[1] `mudra_webcam_test/app.py`  
-[2] `mudra_webcam_test/original.py`  
-[3] `mudra_webcam_test/skin_segmenation.py`  
-[4] `mudra_webcam_test/models/class_names.json`  
-[5] `mudra_webcam_test/models/mudra_mobilenetv2_final.keras`  
-[6] `mudra_webcam_test/requirements.txt`  
-[7] `mudra_webcam_test/frontend/src/App.jsx`  
-[8] `mudra_webcam_test/frontend/src/hooks/useLiveMudraData.js`  
-[9] `mudra_webcam_test/frontend/vite.config.js`  
-[10] `mudra_webcam_test/frontend/package.json`
+## V. Experimental Pipeline and Reproducibility
+### A. Notebook Environment
+Notebook outputs show TensorFlow 2.19.0 in Colab execution, while deployment requirements pin TensorFlow 2.21.0 in the local runtime. The training artifact is exported as `.keras`.
+
+### B. Saved Artifacts
+The notebook saves:
+- `mudra_mobilenetv2_final.keras`
+- `class_names.json`
+- intermediate checkpoints (`best_head.keras`, `best_finetuned.keras`)
+
+### C. End-to-End Deployment Coupling
+The deployed system integrates:
+1. Model inference (`original.py`)
+2. Hand detection and landmarks (MediaPipe task model)
+3. Optional segmentation (`skin_segmenation.py`, HSV/YCrCb modes)
+4. Flask integration layer (`app.py`)
+5. Frontend trigger workflow (React UI buttons launching method-specific runtime)
+
+## VI. Deployment Architecture
+### A. Runtime Flow Diagram
+```mermaid
+flowchart LR
+    A["Frontend: Select YCrCb or HSV"] --> B["Flask API: /api/run-segmentation"]
+    B --> C["Launch skin_segmenation.py with selected method"]
+    C --> D["OpenCV Webcam Stream"]
+    D --> E["MediaPipe Hand Landmark Detection"]
+    E --> F["Hand Crop + Segmentation (HSV/YCrCb)"]
+    F --> G["CNN Inference (MobileNetV2 Final Model)"]
+    G --> H["Top-1 + Top-3 Predictions + Hasta Type"]
+    H --> I["Live Visual Output Window"]
+```
+
+### B. Model Architecture Diagram
+```mermaid
+flowchart TD
+    A["Input 224x224x1 (Grayscale)"] --> B["Data Augmentation"]
+    B --> C["Channel Replication to 3 Channels"]
+    C --> D["MobileNetV2 Backbone (ImageNet, no top)"]
+    D --> E["GlobalAveragePooling2D"]
+    E --> F["BatchNormalization"]
+    F --> G["Dropout (0.35)"]
+    G --> H["Dense Softmax (50 Classes)"]
+```
+
+### C. Training Strategy Diagram
+```mermaid
+flowchart LR
+    A["Stage 1: Frozen Backbone, LR=1e-3"] --> B["Checkpoint best head"]
+    B --> C["Stage 2: Partial Fine-Tuning, LR=1e-5"]
+    C --> D["Best fine-tuned checkpoint"]
+    D --> E["Export final .keras model"]
+```
+
+## VII. Results
+### A. Validation Performance (Notebook Evaluation Cell)
+From the explicit notebook evaluation:
+- Validation Loss: **0.1197**
+- Validation Accuracy: **0.9634** (96.34%)
+
+### B. Full Evaluation Pass (All 28,431 Images)
+The notebook’s `classification_report` over the full directory (non-shuffled) reports:
+- Overall Accuracy: **0.9729**
+- Macro Precision: **0.9725**
+- Macro Recall: **0.9718**
+- Macro F1-score: **0.9718**
+- Weighted F1-score: **0.9728**
+
+### C. Class-Wise Observations
+Several classes achieve perfect or near-perfect recall:
+- `Berunda`: 100.00%
+- `Chakra`: 100.00%
+- `Garuda`: 100.00%
+- `Katakavardhana`: 100.00%
+- `Matsya`: 100.00%
+- `Shivalinga`: 100.00%
+
+Challenging classes include:
+- `Bramaram`: 84.62% recall
+- `Ardhapathaka`: 85.10%
+- `Tripathaka`: 86.03%
+
+These lower-recall classes likely correspond to fine-grained finger geometry overlap and viewpoint sensitivity.
+
+### D. Quantitative Summary Table
+
+| Metric | Value |
+|---|---:|
+| Number of classes | 50 |
+| Total images | 28,431 |
+| Train split | 22,745 |
+| Validation split | 5,686 |
+| Final validation accuracy | 96.34% |
+| Full-eval accuracy | 97.29% |
+| Macro F1-score | 0.9718 |
+| Weighted F1-score | 0.9728 |
+| Model parameters | 2,327,154 |
+
+## VIII. Discussion
+### A. Why the Pipeline Works
+Three design choices appear critical:
+1. **Transfer learning with MobileNetV2**: strong pretrained priors reduce data requirements.
+2. **Two-stage optimization**: improves convergence stability and final discriminative tuning.
+3. **Augmentation and grayscale consistency**: supports robust webcam deployment by reducing color dependency.
+
+### B. Deployment Trade-Offs
+The practical system prioritizes real-time usability:
+- Lightweight backbone and small input resolution
+- Optional segmentation modes for varying conditions
+- Camera-centric runtime with immediate visual feedback
+
+However, production-scale deployment would benefit from:
+- explicit latency profiling on target hardware
+- calibration and uncertainty estimates
+- per-device illumination adaptation strategies.
+
+### C. Evaluation Caveat
+One notebook evaluation block computes predictions on the entire directory. Since this includes images used in training/validation creation, this number should be interpreted as a broad diagnostic score rather than a fully independent test-set benchmark. Future work should use a strict held-out test protocol.
+
+## IX. Limitations
+1. No dedicated external test split is reported in the notebook.
+2. No cross-subject protocol is documented.
+3. No temporal model (e.g., LSTM/Transformer over landmarks) is used for dynamic gestures.
+4. Illumination robustness is handled via augmentation/segmentation but not via domain adaptation.
+5. Inference uncertainty and confidence calibration are not explicitly measured.
+
+## X. Future Work
+1. Build a subject-disjoint test benchmark and report confidence intervals.
+2. Compare MobileNetV2 against EfficientNet-Lite and modern vision transformers.
+3. Fuse landmarks + segmented appearance features for better class disambiguation.
+4. Add knowledge distillation for even lower-latency edge deployment.
+5. Introduce active-learning loops for rare/confused mudra classes.
+6. Extend to sequence-aware recognition for expressive dance phrase modeling.
+
+## XI. Conclusion
+This paper presented a complete mudra recognition workflow from notebook training to real-time deployment. Using a MobileNetV2 transfer-learning strategy on a 50-class Bharatanatyam mudra dataset, the system achieved strong classification performance (96.34% validation accuracy; 97.29% full-eval accuracy in the notebook report). The deployment stack integrates webcam acquisition, hand localization, segmentation options, and method-driven runtime launching from a frontend interface. The results indicate that lightweight transfer learning can support accurate, practical mudra recognition under real-time constraints, while leaving clear opportunities for stronger evaluation protocol design and multimodal model extensions.
+
+## References
+[1] Y. LeCun, Y. Bengio, and G. Hinton, “Deep learning,” *Nature*, vol. 521, no. 7553, pp. 436–444, 2015.  
+[2] M. Sandler, A. Howard, M. Zhu, A. Zhmoginov, and L.-C. Chen, “MobileNetV2: Inverted residuals and linear bottlenecks,” in *Proc. CVPR*, 2018, pp. 4510–4520.  
+[3] A. Howard *et al.*, “Searching for MobileNetV3,” in *Proc. ICCV*, 2019, pp. 1314–1324.  
+[4] S. J. Pan and Q. Yang, “A survey on transfer learning,” *IEEE Trans. Knowl. Data Eng.*, vol. 22, no. 10, pp. 1345–1359, 2010.  
+[5] K. Weiss, T. M. Khoshgoftaar, and D. Wang, “A survey of transfer learning,” *J. Big Data*, vol. 3, no. 9, 2016.  
+[6] V. Bazarevsky *et al.*, “BlazePose: On-device real-time body pose tracking,” arXiv:2006.10204, 2020.  
+[7] R. Gonzalez and R. Woods, *Digital Image Processing*, 4th ed. Pearson, 2018.  
+[8] M.-H. Yang and N. Ahuja, “Detecting human faces in color images,” in *Proc. ICIP*, 1998, pp. 127–130.  
+[9] L. Perez and J. Wang, “The effectiveness of data augmentation in image classification using deep learning,” arXiv:1712.04621, 2017.  
+[10] A. Shorten and T. M. Khoshgoftaar, “A survey on image data augmentation for deep learning,” *J. Big Data*, vol. 6, no. 60, 2019.  
+[11] O. Koller, H. Ney, and R. Bowden, “Deep hand: How to train a CNN on 1 million hand images when your data is continuous and weakly labelled,” in *Proc. CVPR*, 2016, pp. 3793–3802.  
+[12] K. Simonyan and A. Zisserman, “Two-stream convolutional networks for action recognition in videos,” in *Proc. NIPS*, 2014, pp. 568–576.  
+[13] M. Everingham *et al.*, “The Pascal Visual Object Classes (VOC) challenge,” *Int. J. Comput. Vis.*, vol. 88, no. 2, pp. 303–338, 2010.  
+[14] F. Chollet, *Deep Learning with Python*, 2nd ed. Manning, 2021.  
+[15] J. Raj R., “Bharatanatyam-Mudra-Dataset,” GitHub repository. [Online]. Available: https://github.com/jisharajr/Bharatanatyam-Mudra-Dataset  
+[16] TensorFlow, “TensorFlow: An end-to-end open-source machine learning platform.” [Online]. Available: https://www.tensorflow.org/  
+[17] OpenCV, “Open Source Computer Vision Library.” [Online]. Available: https://opencv.org/  
+[18] Keras Team, “Keras applications: MobileNetV2.” [Online]. Available: https://keras.io/api/applications/mobilenet/  
+[19] MediaPipe Team, “MediaPipe solutions and tasks.” [Online]. Available: https://developers.google.com/mediapipe  
+[20] Scikit-learn Developers, “Classification metrics and confusion matrix.” [Online]. Available: https://scikit-learn.org/stable/modules/model_evaluation.html

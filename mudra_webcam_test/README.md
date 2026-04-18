@@ -72,6 +72,8 @@ When you click:
 - `Try HSV Model` -> backend launches:
   `.\.venv\Scripts\python .\mudra_webcam_test\skin_segmenation.py --camera 0 --method hsv`
 
+Use `Stop Running Model` in the UI before switching manually if needed.
+
 ## API Contract
 
 ### `GET /health`

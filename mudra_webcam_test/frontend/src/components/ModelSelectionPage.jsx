@@ -16,7 +16,13 @@ function LotusButton({ label, onClick, disabled = false }) {
   );
 }
 
-export default function ModelSelectionPage({ onSelect, loading = false, activeMethod = null, message = "" }) {
+export default function ModelSelectionPage({
+  onSelect,
+  onStop,
+  loading = false,
+  activeMethod = null,
+  message = ""
+}) {
   return (
     <main className="model-choice-screen relative flex min-h-screen items-center justify-center px-5 py-10">
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[rgba(33,3,9,0.82)] via-[rgba(19,1,6,0.9)] to-[rgba(0,0,0,0.96)]" />
@@ -55,6 +61,18 @@ export default function ModelSelectionPage({ onSelect, loading = false, activeMe
             disabled={loading}
           />
         </div>
+        {activeMethod ? (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={loading}
+              className="rounded-lg border border-[#f2d8a7]/40 bg-[rgba(45,7,14,0.7)] px-5 py-2 font-body text-xs uppercase tracking-[0.2em] text-[#f2d8a7] transition hover:border-[#f2d8a7]/80 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Stop Running Model
+            </button>
+          </div>
+        ) : null}
         {message ? (
           <p className="mx-auto mt-5 max-w-2xl font-body text-sm tracking-wide text-[#f1e0c5]/90">{message}</p>
         ) : null}

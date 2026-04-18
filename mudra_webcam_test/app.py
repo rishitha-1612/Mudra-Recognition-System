@@ -210,7 +210,7 @@ class LiveMudraEngine:
 class SegmentationScriptRunner:
     def __init__(self, script_path: Path) -> None:
         self.script_path = script_path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._process: Optional[subprocess.Popen] = None
         self._last_method: Optional[str] = None
         self._last_error: Optional[str] = None

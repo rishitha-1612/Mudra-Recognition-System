@@ -18,6 +18,16 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, []);
 
+  const parseJsonSafely = async (response) => {
+    const raw = await response.text();
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return { error: raw.slice(0, 300) || "Non-JSON response from backend." };
+    }
+  };
+
   const runSegmentationScript = async (method) => {
     setLaunchState({
       loading: true,
@@ -31,9 +41,9 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ method, camera: 0 })
       });
-      const payload = await response.json();
+      const payload = await parseJsonSafely(response);
       if (!response.ok || !payload?.ok) {
-        throw new Error(payload?.error || "Failed to start segmentation script.");
+        throw new Error(payload?.error || `Failed to start segmentation script (HTTP ${response.status}).`);
       }
 
       setLaunchState({
@@ -47,6 +57,33 @@ export default function App() {
         method: null,
         message: `Could not start script: ${error.message}`
       });
+    }
+  };
+
+  const stopSegmentationScript = async () => {
+    setLaunchState((prev) => ({
+      ...prev,
+      loading: true,
+      message: "Stopping running model..."
+    }));
+
+    try {
+      const response = await fetch("/api/stop-segmentation", { method: "POST" });
+      const payload = await parseJsonSafely(response);
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.error || `Failed to stop script (HTTP ${response.status}).`);
+      }
+      setLaunchState({
+        loading: false,
+        method: null,
+        message: "Stopped. You can launch YCrCb or HSV now."
+      });
+    } catch (error) {
+      setLaunchState((prev) => ({
+        ...prev,
+        loading: false,
+        message: `Could not stop script: ${error.message}`
+      }));
     }
   };
 
@@ -72,6 +109,7 @@ export default function App() {
           >
             <ModelSelectionPage
               onSelect={runSegmentationScript}
+              onStop={stopSegmentationScript}
               loading={launchState.loading}
               activeMethod={launchState.method}
               message={launchState.message}
